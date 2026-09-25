@@ -20,7 +20,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    with open("Главный.png", "rb") as photo:
+    with open("test.png", "rb") as photo:
         await update.message.reply_photo(
             photo=photo,
             caption=(
