@@ -1,47 +1,137 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes
+import os
+import telebot
+from telebot import types
 
-TOKEN = "ТВОЙ_ТОКЕН"
+TOKEN = os.getenv("BOT_TOKEN")
+
+bot = telebot.TeleBot(TOKEN)
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("🔗 Подключиться", callback_data="connect")],
-        [InlineKeyboardButton("⚡ Купить", callback_data="buy")],
-        [InlineKeyboardButton("🔒 Моя подписка", callback_data="subscription")],
-        [
-            InlineKeyboardButton("👥 Рефералы", callback_data="referrals"),
-            InlineKeyboardButton("ℹ️ Информация", callback_data="info")
-        ],
-        [InlineKeyboardButton("📖 Язык", callback_data="language")],
-        [InlineKeyboardButton("💬 Поддержка", callback_data="support")],
-        [InlineKeyboardButton("📢 Новости", callback_data="news")]
-    ]
+@bot.message_handler(commands=["start"])
+def start(message):
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    text = (
+        f"⚡ <b>Привет, {message.from_user.first_name}!</b>\n\n"
+        "🔒 Подписка активна\n"
+        "📅 До: 03.02.2027\n"
+        "📱 Устройства: 2/2\n\n"
+        "Выберите действие:"
+    )
 
-    with open("test.png", "rb") as photo:
-        await update.message.reply_photo(
-            photo=photo,
-            caption=(
-                "⚡ <b>Привет, {}</b>\n\n"
-                "🔒 <b>Ваша подписка активна</b>\n"
-                "📱 Устройства: 2/2\n\n"
-                "Добро пожаловать! Выберите действие ниже."
-            ).format(update.effective_user.first_name),
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "🔗 Подключиться",
+            callback_data="connect"
+        )
+    )
+
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "⚡ Купить",
+            callback_data="buy"
+        )
+    )
+
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "🔒 Моя подписка",
+            callback_data="subscription"
+        )
+    )
+
+    keyboard.row(
+        types.InlineKeyboardButton(
+            "👥 Рефералы",
+            callback_data="referrals"
+        ),
+        types.InlineKeyboardButton(
+            "ℹ️ Информация",
+            callback_data="info"
+        )
+    )
+
+    keyboard.add(
+        types.InlineKeyboardButton(
+            "💬 Поддержка",
+            callback_data="support"
+        )
+    )
+
+    # Картинка test.png должна лежать рядом с main.py
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    image_path = os.path.join(base_dir, "test.png")
+
+    with open(image_path, "rb") as photo:
+        bot.send_photo(
+            message.chat.id,
+            photo,
+            caption=text,
             parse_mode="HTML",
-            reply_markup=reply_markup
+            reply_markup=keyboard
         )
 
 
-def main():
-    app = Application.builder().token(TOKEN).build()
+@bot.callback_query_handler(func=lambda call: True)
+def buttons(call):
 
-    app.add_handler(CommandHandler("start", start))
+    if call.data == "connect":
+        bot.answer_callback_query(call.id)
+        bot.send_message(
+            call.message.chat.id,
+            "🔗 <b>Подключение</b>\n\n"
+            "Здесь будет инструкция по подключению.",
+            parse_mode="HTML"
+        )
 
-    print("Бот запущен!")
-    app.run_polling()
+    elif call.data == "buy":
+        bot.answer_callback_query(call.id)
+        bot.send_message(
+            call.message.chat.id,
+            "⚡ <b>Покупка подписки</b>\n\n"
+            "Здесь появятся тарифы.",
+            parse_mode="HTML"
+        )
+
+    elif call.data == "subscription":
+        bot.answer_callback_query(call.id)
+        bot.send_message(
+            call.message.chat.id,
+            "🔒 <b>Моя подписка</b>\n\n"
+            "📅 До: 03.02.2027\n"
+            "📱 Устройства: 2/2",
+            parse_mode="HTML"
+        )
+
+    elif call.data == "referrals":
+        bot.answer_callback_query(call.id)
+        bot.send_message(
+            call.message.chat.id,
+            "👥 <b>Реферальная система</b>\n\n"
+            "Ваша реферальная ссылка появится здесь.",
+            parse_mode="HTML"
+        )
+
+    elif call.data == "info":
+        bot.answer_callback_query(call.id)
+        bot.send_message(
+            call.message.chat.id,
+            "ℹ️ <b>Информация</b>\n\n"
+            "Добро пожаловать! Здесь будет информация о сервисе.",
+            parse_mode="HTML"
+        )
+
+    elif call.data == "support":
+        bot.answer_callback_query(call.id)
+        bot.send_message(
+            call.message.chat.id,
+            "💬 <b>Поддержка</b>\n\n"
+            "Напишите нам, если у вас возникли вопросы.",
+            parse_mode="HTML"
+        )
 
 
-if __name__ == "__main__":
-    main()
+print("Бот запущен!")
+
+bot.infinity_polling()
