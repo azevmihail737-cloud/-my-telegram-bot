@@ -22,6 +22,13 @@ def start(message):
 
     keyboard.add(
         types.InlineKeyboardButton(
+            "👋 Привет",
+            callback_data="hello"
+        )
+    )
+
+    keyboard.add(
+        types.InlineKeyboardButton(
             "🔗 Подключиться",
             callback_data="connect"
         )
@@ -76,7 +83,16 @@ def start(message):
 @bot.callback_query_handler(func=lambda call: True)
 def buttons(call):
 
-    if call.data == "connect":
+    if call.data == "hello":
+        bot.answer_callback_query(call.id)
+        bot.send_message(
+            call.message.chat.id,
+            "👋 <b>Привет!</b>\n\n"
+            "Добро пожаловать в наш бот! 😊",
+            parse_mode="HTML"
+        )
+
+    elif call.data == "connect":
         bot.answer_callback_query(call.id)
         bot.send_message(
             call.message.chat.id,
