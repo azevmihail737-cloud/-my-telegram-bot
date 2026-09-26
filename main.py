@@ -9,6 +9,7 @@ from telebot import types
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_USERNAME = (os.getenv("ADMIN_USERNAME", "SotkaSV")).lstrip("@")
 ADMIN_USER_ID = os.getenv("ADMIN_USER_ID")
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATA_FILE = os.path.join(os.path.dirname(__file__), "orders.json")
 SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "settings.json")
 
@@ -68,7 +69,10 @@ def is_admin(user) -> bool:
 
 
 def get_admin_chat_id() -> Optional[int]:
-    value = load_json(SETTINGS_FILE, {}).get("admin_chat_id")
+    config = load_json(SETTINGS_FILE, {})
+    if ADMIN_CHAT_ID:
+        return int(ADMIN_CHAT_ID)
+    value = config.get("admin_chat_id")
     return int(value) if value else None
 
 
@@ -144,9 +148,11 @@ def find_order(order_id: str):
 
 def order_text(order: Dict) -> str:
     user_name = order.get("user_name") or order.get("username") or order.get("first_name") or "Без имени"
+    if not str(user_name).startswith("@"):
+        user_name = f"@{user_name}"
     return (
         f"<b>📩 Заявка #{order['id']}</b>\n\n"
-        f"Покупатель: @{user_name if user_name and not user_name.startswith('@') else user_name}\n"
+        f"Покупатель: {user_name}\n"
         f"Имя: {order.get('first_name', '—')}\n"
         f"Товар: {order['product']}\n"
         f"Цена: {order['price']}\n"
@@ -186,7 +192,7 @@ def start(message):
     )
 
 
-@bot.message_handler(commands=["admin"])
+@bot.message_handler(commands=["admin", "adminchat"])
 def admin(message):
     if not is_admin(message.from_user):
         bot.send_message(message.chat.id, "❌ Доступ запрещён.")
@@ -454,4 +460,7 @@ def noop(call):
 
 if __name__ == "__main__":
     print("Бот запущен")
+    print(f"Админ username: @{ADMIN_USERNAME}")
+    print(f"Админ user_id: {ADMIN_USER_ID}")
+    print("Команды: /admin или /adminchat")
     bot.infinity_polling()
