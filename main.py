@@ -1,515 +1,446 @@
 import json
 import os
-from typing import Dict, List
+from datetime import datetime, timezone
+from typing import Dict, List, Optional
 
 import telebot
 from telebot import types
 
-TOKEN = os.getenv("BOT_TOKEN", "7919305289:AAEi0Fh_kT_8-N8V5qZ9W_xY2A3B4C5D6E7")
-ADMIN_USERNAME = "SotkaSV"
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
+TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_USERNAME = (os.getenv("ADMIN_USERNAME", "SotkaSV")).lstrip("@")
 DATA_FILE = os.path.join(os.path.dirname(__file__), "orders.json")
+SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "settings.json")
 
 if not TOKEN:
-    raise RuntimeError("Переменная окружения BOT_TOKEN не задана")
+    raise RuntimeError("Задайте переменную окружения BOT_TOKEN")
 
 bot = telebot.TeleBot(TOKEN)
 
-# Тарифы App Store
-KEYS = {
+PRODUCTS = {
     "1m": {"title": "App Store — 1 месяц", "price": "299 ₽"},
     "3m": {"title": "App Store — 3 месяца", "price": "799 ₽"},
     "12m": {"title": "App Store — 12 месяцев", "price": "2499 ₽"},
 }
 
-# Храним, какой пользователь сейчас ждёт фото оплаты
-awaiting_payment = {}
+awaiting_payment: Dict[int, str] = {}
+awaiting_key: Dict[int, str] = {}
+
+
+def load_json(path: str, default):
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return default
+
+
+def save_json(path: str, value):
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(value, file, ensure_ascii=False, indent=2)
 
 
 def load_orders() -> List[Dict]:
-    """Загружает заказы из файла"""
-    if not os.path.exists(DATA_FILE):
-        return []
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, list) else []
-    except (json.JSONDecodeError, OSError):
-        return []
+    data = load_json(DATA_FILE, [])
+    return data if isinstance(data, list) else []
 
 
 def save_orders(orders: List[Dict]):
-    """Сохраняет заказы в файл"""
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(orders, f, ensure_ascii=False, indent=2)
+    save_json(DATA_FILE, orders)
 
 
-def get_pending_orders():
-    """Получает все открытые заявки"""
-    return [o for o in load_orders() if o.get("status") == "new"]
+def pending_orders() -> List[Dict]:
+    return [order for order in load_orders() if order.get("status") == "pending"]
+
+
+def next_order_id(orders: List[Dict]) -> int:
+    return max((int(order.get("id", 0)) for order in orders), default=0) + 1
 
 
 def is_admin(user) -> bool:
-    """Проверяет, является ли пользователь админом"""
-    username = (user.username or "").lower()
-    return username == ADMIN_USERNAME.lower()
+    return (user.username or "").lower() == ADMIN_USERNAME.lower()
 
 
-def build_main_menu():
-    """Главное меню"""
-    keyboard = types.InlineKeyboardMarkup(row_width=1)
+def get_admin_chat_id() -> Optional[int]:
+    value = load_json(SETTINGS_FILE, {}).get("admin_chat_id")
+    return int(value) if value else None
+
+
+def set_admin_chat_id(chat_id: int):
+    save_json(SETTINGS_FILE, {"admin_chat_id": chat_id})
+
+
+def main_keyboard():
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    keyboard.add(types.InlineKeyboardButton("🛒 Купить App Store", callback_data="buy"))
     keyboard.add(
-        types.InlineKeyboardButton("🛒 Купить App Store", callback_data="buy_key"),
         types.InlineKeyboardButton("📋 Мои заявки", callback_data="my_orders"),
+        types.InlineKeyboardButton("ℹ️ Помощь", callback_data="help"),
     )
     return keyboard
 
 
-def build_key_menu():
-    """Меню с выбором тарифов"""
+def products_keyboard():
     keyboard = types.InlineKeyboardMarkup(row_width=1)
-    for key, info in KEYS.items():
+    for key, product in PRODUCTS.items():
         keyboard.add(
             types.InlineKeyboardButton(
-                f"{info['title']} — {info['price']}",
-                callback_data=f"plan_{key}",
+                f"{product['title']} · {product['price']}",
+                callback_data=f"product:{key}",
             )
         )
-    keyboard.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="main_menu"))
+    keyboard.add(types.InlineKeyboardButton("⬅️ Главное меню", callback_data="home"))
     return keyboard
 
 
-def build_admin_menu():
-    """Меню админа"""
+def admin_keyboard():
+    count = len(pending_orders())
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    keyboard.add(types.InlineKeyboardButton(f"📥 Открытые ({count})", callback_data="admin:list"))
+    keyboard.add(
+        types.InlineKeyboardButton("📊 Статистика", callback_data="admin:stats"),
+        types.InlineKeyboardButton("🔄 Обновить", callback_data="admin:menu"),
+    )
+    return keyboard
+
+
+def pending_keyboard():
     keyboard = types.InlineKeyboardMarkup(row_width=1)
-    pending = get_pending_orders()
-    count = len(pending)
-    button_text = f"📌 Открытые заявки ({count})"
-    keyboard.add(types.InlineKeyboardButton(button_text, callback_data="admin_open_requests"))
+    orders = pending_orders()
+    if not orders:
+        keyboard.add(types.InlineKeyboardButton("✅ Открытых заявок нет", callback_data="noop"))
+    else:
+        for order in orders:
+            keyboard.add(
+                types.InlineKeyboardButton(
+                    f"🟡 #{order['id']} · {order['product']} · {order['user_name']}",
+                    callback_data=f"admin:order:{order['id']}",
+                )
+            )
+    keyboard.add(types.InlineKeyboardButton("⬅️ Админ-панель", callback_data="admin:menu"))
     return keyboard
 
 
-def build_pending_requests_keyboard():
-    """Меню с открытыми заявками"""
-    keyboard = types.InlineKeyboardMarkup(row_width=1)
-    pending = get_pending_orders()
-    
-    if not pending:
-        keyboard.add(types.InlineKeyboardButton("✅ Нет открытых заявок", callback_data="noop"))
-        return keyboard
-
-    for order in pending:
-        label = f"#{order['id']} — {order['product']} | {order['user_name']}"
-        keyboard.add(types.InlineKeyboardButton(label, callback_data=f"admin_order_{order['id']}"))
-    
-    keyboard.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="admin_menu"))
+def order_detail_keyboard(order_id: int):
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        types.InlineKeyboardButton("✅ Принять", callback_data=f"admin:approve:{order_id}"),
+        types.InlineKeyboardButton("❌ Отклонить", callback_data=f"admin:reject:{order_id}"),
+    )
+    keyboard.add(types.InlineKeyboardButton("⬅️ К заявкам", callback_data="admin:list"))
     return keyboard
 
 
-def get_order_by_id(order_id: str):
-    """Получает заказ по ID"""
-    for order in load_orders():
-        if str(order.get("id")) == str(order_id):
-            return order
-    return None
+def find_order(order_id: str):
+    return next((o for o in load_orders() if str(o.get("id")) == str(order_id)), None)
 
 
-def send_to_admin(message_text, photo_file_id=None):
-    """Отправляет сообщение админу"""
-    if ADMIN_CHAT_ID:
+def order_text(order: Dict) -> str:
+    return (
+        f"<b>📩 Заявка #{order['id']}</b>\n\n"
+        f"Покупатель: @{order.get('username') or 'без username'}\n"
+        f"Имя: {order.get('first_name', '—')}\n"
+        f"Товар: {order['product']}\n"
+        f"Цена: {order['price']}\n"
+        f"Дата: {order.get('created_at', '—')}\n"
+        "Статус: 🟡 на рассмотрении"
+    )
+
+
+def notify_admin(order: Dict):
+    chat_id = get_admin_chat_id()
+    if not chat_id:
         try:
-            if photo_file_id:
-                bot.send_photo(int(ADMIN_CHAT_ID), photo_file_id, caption=message_text, parse_mode="HTML")
-            else:
-                bot.send_message(int(ADMIN_CHAT_ID), message_text, parse_mode="HTML")
+            admin_user = bot.get_chat(f"@{ADMIN_USERNAME}")
+            chat_id = admin_user.id
+        except Exception:
+            print("Админ не найден по username. Уведомление не отправлено.")
             return
-        except Exception as e:
-            print(f"Ошибка отправки админу (по CHAT_ID): {e}")
 
-    # Пытаемся отправить по username
+    caption = order_text(order)
     try:
-        admin_user = bot.get_chat(f"@{ADMIN_USERNAME}")
-        admin_chat_id = admin_user.id
-
-        if photo_file_id:
-            bot.send_photo(admin_chat_id, photo_file_id, caption=message_text, parse_mode="HTML")
+        if order.get("proof_file_id"):
+            bot.send_photo(chat_id, order["proof_file_id"], caption=caption, parse_mode="HTML")
         else:
-            bot.send_message(admin_chat_id, message_text, parse_mode="HTML")
-    except Exception as e:
-        print(f"Ошибка отправки админу (по username): {e}")
+            bot.send_message(chat_id, caption, parse_mode="HTML")
+        bot.send_message(chat_id, "Откройте /admin → «Открытые заявки», чтобы принять или отклонить заявку.")
+    except Exception as error:
+        print(f"Ошибка отправки уведомления админу: {error}")
 
-
-# ======================== HANDLERS ========================
 
 @bot.message_handler(commands=["start"])
-def cmd_start(message):
-    """Обработчик команды /start"""
-    user_name = message.from_user.first_name or "Друг"
+def start(message):
     bot.send_message(
         message.chat.id,
-        f"🛍️ Привет, {user_name}!\n\nДобро пожаловать в App Store Bot\n\nВыберите действие:",
-        reply_markup=build_main_menu(),
+        "🛍️ <b>App Store Store</b>\nВыберите действие:",
+        parse_mode="HTML",
+        reply_markup=main_keyboard(),
     )
 
 
 @bot.message_handler(commands=["admin"])
-def cmd_admin(message):
-    """Обработчик команды /admin"""
+def admin(message):
     if not is_admin(message.from_user):
-        bot.send_message(
-            message.chat.id,
-            "❌ У вас нет доступа к админ-панели.\n\n"
-            f"Админ: @{ADMIN_USERNAME}"
-        )
+        bot.send_message(message.chat.id, "❌ Доступ запрещён.")
         return
-
+    set_admin_chat_id(message.chat.id)
     bot.send_message(
         message.chat.id,
-        "🔐 <b>Админ-панель</b>\n\nВыберите действие:",
-        reply_markup=build_admin_menu(),
-        parse_mode="HTML"
+        "🔐 <b>Панель администратора</b>",
+        parse_mode="HTML",
+        reply_markup=admin_keyboard(),
     )
 
 
-@bot.message_handler(commands=["help"])
-def cmd_help(message):
-    """Обработчик команды /help"""
-    bot.send_message(
-        message.chat.id,
-        "<b>🛍️ App Store Bot</b>\n\n"
-        "<b>Как купить:</b>\n"
-        "1. Нажмите '<b>Купить App Store</b>'\n"
-        "2. Выберите тариф\n"
-        "3. Отправьте скриншот оплаты\n"
-        "4. Админ рассмотрит заявку\n"
-        "5. Получите ключ\n\n"
-        "<b>Тарифы:</b>\n"
-        "📅 1 месяц — 299 ₽\n"
-        "📅 3 месяца — 799 ₽\n"
-        "📅 12 месяцев — 2499 ₽\n\n"
-        f"<b>Админ:</b> @{ADMIN_USERNAME}",
-        parse_mode="HTML"
-    )
-
-
-# ======================== CALLBACK HANDLERS ========================
-
-@bot.callback_query_handler(func=lambda call: call.data == "main_menu")
-def callback_main_menu(call):
-    """Возврат в главное меню"""
+@bot.callback_query_handler(func=lambda call: call.data == "home")
+def home(call):
+    bot.answer_callback_query(call.id)
     bot.edit_message_text(
-        "🛍️ Выберите действие:",
+        "🛍️ <b>App Store Store</b>\nВыберите действие:",
         call.message.chat.id,
         call.message.message_id,
-        reply_markup=build_main_menu(),
+        parse_mode="HTML",
+        reply_markup=main_keyboard(),
     )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "buy")
+def buy(call):
     bot.answer_callback_query(call.id)
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "buy_key")
-def callback_buy_key(call):
-    """Меню покупки"""
     bot.edit_message_text(
-        "📦 <b>Выберите тариф App Store:</b>",
+        "📦 <b>Выберите тариф:</b>",
         call.message.chat.id,
         call.message.message_id,
-        reply_markup=build_key_menu(),
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=products_keyboard(),
     )
-    bot.answer_callback_query(call.id)
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("plan_"))
-def callback_plan(call):
-    """Выбор тарифа"""
-    product_key = call.data.split("_", 1)[1]
-    product = KEYS.get(product_key)
-
+@bot.callback_query_handler(func=lambda call: call.data.startswith("product:"))
+def choose_product(call):
+    key = call.data.split(":", 1)[1]
+    product = PRODUCTS.get(key)
     if not product:
-        bot.answer_callback_query(call.id, "❌ Тариф не найден", show_alert=True)
+        bot.answer_callback_query(call.id, "Тариф не найден", show_alert=True)
         return
-
-    user_id = call.from_user.id
-    awaiting_payment[user_id] = product_key
-
-    bot.answer_callback_query(call.id, "✅ Тариф выбран")
+    awaiting_payment[call.from_user.id] = key
+    bot.answer_callback_query(call.id)
     bot.send_message(
         call.message.chat.id,
-        f"<b>✅ Вы выбрали:</b> {product['title']}\n"
-        f"<b>💰 Цена:</b> {product['price']}\n\n"
-        "<b>📸 Отправьте скриншот оплаты</b>\n"
-        "После этого заявка уйдёт админу на рассмотрение.",
-        parse_mode="HTML"
+        f"✅ <b>{product['title']}</b>\n💰 {product['price']}\n\n"
+        "После оплаты отправьте сюда скриншот чека одним сообщением.",
+        parse_mode="HTML",
     )
 
 
 @bot.message_handler(content_types=["photo", "document"])
-def handle_payment_photo(message):
-    """Обработка фото оплаты"""
-    user_id = message.from_user.id
-    if user_id not in awaiting_payment:
+def payment_proof(message):
+    key = awaiting_payment.pop(message.from_user.id, None)
+    if not key:
         return
-
-    product_key = awaiting_payment.pop(user_id)
-    product = KEYS[product_key]
-
-    photo_file_id = None
-    if message.photo:
-        photo_file_id = message.photo[-1].file_id
-    elif message.document:
-        photo_file_id = message.document.file_id
-
+    product = PRODUCTS[key]
     orders = load_orders()
-    order_id = str(len(orders) + 1)
-
-    new_order = {
-        "id": order_id,
-        "user_id": str(message.from_user.id),
-        "user_name": message.from_user.username or message.from_user.first_name or "Без имени",
-        "user_first_name": message.from_user.first_name or "Без имени",
+    order = {
+        "id": next_order_id(orders),
+        "user_id": message.from_user.id,
+        "username": message.from_user.username,
+        "first_name": message.from_user.first_name,
         "product": product["title"],
         "price": product["price"],
-        "photo_file_id": photo_file_id,
-        "status": "new",
-        "created_at": str(message.date),
+        "proof_file_id": message.photo[-1].file_id if message.photo else message.document.file_id,
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
     }
-
-    orders.append(new_order)
+    orders.append(order)
     save_orders(orders)
-
     bot.send_message(
         message.chat.id,
-        "✅ <b>Заявка отправлена</b>\n\n"
-        "Ваша заявка отправлена админу на рассмотрение.\n"
-        "Проверьте статус в меню 'Мои заявки'\n"
-        "⏱️ Время обработки: обычно 1-2 часа",
-        parse_mode="HTML",
-        reply_markup=build_main_menu()
+        f"✅ Заявка #{order['id']} отправлена на проверку.",
+        reply_markup=main_keyboard(),
     )
-
-    admin_text = (
-        f"<b>📩 НОВАЯ ЗАЯВКА НА APP STORE</b>\n\n"
-        f"<b>ID заявки:</b> #{order_id}\n"
-        f"<b>Пользователь:</b> @{message.from_user.username or 'без username'}\n"
-        f"<b>Имя:</b> {message.from_user.first_name}\n"
-        f"<b>Тариф:</b> {product['title']}\n"
-        f"<b>Цена:</b> {product['price']}\n"
-        f"<b>Статус:</b> 🟡 Ожидает подтверждения"
-    )
-
-    send_to_admin(admin_text, photo_file_id)
+    notify_admin(order)
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "my_orders")
-def callback_my_orders(call):
-    """Показать мои заявки"""
-    orders = load_orders()
-    user_orders = [o for o in orders if str(o.get("user_id")) == str(call.from_user.id)]
-
-    if not user_orders:
-        bot.edit_message_text(
-            "📋 <b>Мои заявки</b>\n\n"
-            "У вас пока нет заявок.",
-            call.message.chat.id,
-            call.message.message_id,
-            parse_mode="HTML"
+def my_orders(call):
+    orders = [o for o in load_orders() if str(o.get("user_id")) == str(call.from_user.id)]
+    if not orders:
+        text = "📋 <b>Мои заявки</b>\n\nЗаявок пока нет."
+    else:
+        statuses = {"pending": "🟡 на проверке", "approved": "✅ принята", "rejected": "❌ отклонена"}
+        text = "📋 <b>Мои заявки</b>\n\n" + "\n\n".join(
+            f"#{o['id']} · {o['product']}\n{statuses.get(o['status'], o['status'])}" for o in orders
         )
-        bot.answer_callback_query(call.id)
-        return
-
-    text = "📋 <b>Ваши заявки:</b>\n\n"
-    for order in user_orders:
-        status_text = {
-            "new": "🟡 На рассмотрении",
-            "approved": "✅ Принята (ключ отправлен)",
-            "rejected": "❌ Отклонена",
-        }.get(order.get("status"), "❓ Неизвестно")
-
-        text += f"<b>#{order['id']}</b> — {order['product']}\n{status_text}\n\n"
-
+    bot.answer_callback_query(call.id)
     bot.edit_message_text(
         text,
         call.message.chat.id,
         call.message.message_id,
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=main_keyboard(),
     )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "help")
+def help_menu(call):
     bot.answer_callback_query(call.id)
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "admin_menu")
-def callback_admin_menu(call):
-    """Вернуться в меню админа"""
-    if not is_admin(call.from_user):
-        bot.answer_callback_query(call.id, "❌ Нет доступа", show_alert=True)
-        return
-
     bot.edit_message_text(
-        "🔐 <b>Админ-панель</b>\n\nВыберите действие:",
+        "ℹ️ Выберите тариф, оплатите его и отправьте скриншот чека.\n"
+        "После проверки администратор отправит ключ.\n\n"
+        f"Администратор: @{ADMIN_USERNAME}",
         call.message.chat.id,
         call.message.message_id,
-        reply_markup=build_admin_menu(),
-        parse_mode="HTML"
+        reply_markup=main_keyboard(),
     )
-    bot.answer_callback_query(call.id)
 
 
-@bot.callback_query_handler(func=lambda call: call.data == "admin_open_requests")
-def callback_admin_open_requests(call):
-    """Показать открытые заявки"""
+@bot.callback_query_handler(func=lambda call: call.data == "admin:menu")
+def admin_menu(call):
     if not is_admin(call.from_user):
-        bot.answer_callback_query(call.id, "❌ Нет доступа", show_alert=True)
+        bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
         return
-
-    pending = get_pending_orders()
-    count = len(pending)
-
+    bot.answer_callback_query(call.id)
     bot.edit_message_text(
-        f"📌 <b>Открытые заявки ({count})</b>",
+        "🔐 <b>Панель администратора</b>",
         call.message.chat.id,
         call.message.message_id,
-        reply_markup=build_pending_requests_keyboard(),
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=admin_keyboard(),
     )
-    bot.answer_callback_query(call.id)
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_order_"))
-def callback_admin_order(call):
-    """Показать детали заявки"""
+@bot.callback_query_handler(func=lambda call: call.data == "admin:list")
+def admin_list(call):
     if not is_admin(call.from_user):
-        bot.answer_callback_query(call.id, "❌ Нет доступа", show_alert=True)
+        bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
         return
-
-    order_id = call.data.replace("admin_order_", "")
-    order = get_order_by_id(order_id)
-
-    if not order:
-        bot.answer_callback_query(call.id, "❌ Заявка не найдена", show_alert=True)
-        return
-
-    keyboard = types.InlineKeyboardMarkup(row_width=2)
-    keyboard.add(
-        types.InlineKeyboardButton("✅ Принять", callback_data=f"approve_{order_id}"),
-        types.InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{order_id}"),
-    )
-    keyboard.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="admin_open_requests"))
-
-    caption = (
-        f"<b>📩 Детали заявки #{order['id']}</b>\n\n"
-        f"<b>Пользователь:</b> @{order['user_name']}\n"
-        f"<b>Имя:</b> {order.get('user_first_name', 'N/A')}\n"
-        f"<b>Тариф:</b> {order['product']}\n"
-        f"<b>Цена:</b> {order['price']}\n"
-        f"<b>Статус:</b> 🟡 Ожидает рассмотрения"
-    )
-
-    if order.get("photo_file_id"):
-        try:
-            bot.edit_message_media(
-                types.InputMediaPhoto(order["photo_file_id"], caption=caption, parse_mode="HTML"),
-                call.message.chat.id,
-                call.message.message_id,
-                reply_markup=keyboard,
-            )
-            bot.answer_callback_query(call.id)
-            return
-        except Exception:
-            pass
-
+    bot.answer_callback_query(call.id)
     bot.edit_message_text(
-        caption,
+        f"📥 <b>Открытые заявки: {len(pending_orders())}</b>",
         call.message.chat.id,
         call.message.message_id,
-        reply_markup=keyboard,
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=pending_keyboard(),
     )
-    bot.answer_callback_query(call.id)
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("approve_"))
-def callback_approve(call):
-    """Принять заявку"""
+@bot.callback_query_handler(func=lambda call: call.data == "admin:stats")
+def admin_stats(call):
     if not is_admin(call.from_user):
-        bot.answer_callback_query(call.id, "❌ Нет доступа", show_alert=True)
+        bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
         return
-
-    order_id = call.data.replace("approve_", "")
     orders = load_orders()
-
-    for order in orders:
-        if str(order.get("id")) == str(order_id):
-            order["status"] = "approved"
-            save_orders(orders)
-
-            # Отправляем уведомление пользователю
-            bot.send_message(
-                order["user_id"],
-                f"✅ <b>Ваша заявка #{order_id} ПРИНЯТА!</b>\n\n"
-                f"<b>Тариф:</b> {order['product']}\n"
-                f"<b>Цена:</b> {order['price']}\n\n"
-                "🎉 Ключ будет отправлен вам в ближайшее время.\n"
-                "Спасибо за покупку!",
-                parse_mode="HTML",
-                reply_markup=build_main_menu()
-            )
-            break
-
-    bot.answer_callback_query(call.id, "✅ Заявка принята и пользователю отправлено уведомление")
+    text = (
+        f"📊 <b>Статистика</b>\n\nВсего: {len(orders)}\n"
+        f"🟡 На проверке: {sum(o.get('status') == 'pending' for o in orders)}\n"
+        f"✅ Принято: {sum(o.get('status') == 'approved' for o in orders)}\n"
+        f"❌ Отклонено: {sum(o.get('status') == 'rejected' for o in orders)}"
+    )
+    bot.answer_callback_query(call.id)
     bot.edit_message_text(
-        f"✅ <b>Заявка #{order_id} принята</b>\n\n"
-        "Пользователю отправлено уведомление.",
+        text,
         call.message.chat.id,
         call.message.message_id,
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=admin_keyboard(),
     )
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("reject_"))
-def callback_reject(call):
-    """Отклонить заявку"""
+@bot.callback_query_handler(func=lambda call: call.data.startswith("admin:order:"))
+def admin_order(call):
     if not is_admin(call.from_user):
-        bot.answer_callback_query(call.id, "❌ Нет доступа", show_alert=True)
+        bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
         return
+    order_id = call.data.rsplit(":", 1)[1]
+    order = find_order(order_id)
+    if not order or order.get("status") != "pending":
+        bot.answer_callback_query(call.id, "Заявка уже обработана", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    bot.edit_message_text(
+        order_text(order),
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="HTML",
+        reply_markup=order_detail_keyboard(int(order_id)),
+    )
+    if order.get("proof_file_id"):
+        bot.send_photo(call.message.chat.id, order["proof_file_id"], caption="🧾 Скриншот оплаты")
 
-    order_id = call.data.replace("reject_", "")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("admin:approve:"))
+def approve(call):
+    if not is_admin(call.from_user):
+        bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
+        return
+    order_id = call.data.rsplit(":", 1)[1]
+    order = find_order(order_id)
+    if not order or order.get("status") != "pending":
+        bot.answer_callback_query(call.id, "Заявка уже обработана", show_alert=True)
+        return
+    awaiting_key[call.from_user.id] = order_id
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        call.message.chat.id,
+        f"✅ Заявка #{order_id} подтверждена.\nТеперь пришлите ключ следующим сообщением.",
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("admin:reject:"))
+def reject(call):
+    if not is_admin(call.from_user):
+        bot.answer_callback_query(call.id, "Нет доступа", show_alert=True)
+        return
+    order_id = call.data.rsplit(":", 1)[1]
     orders = load_orders()
-
     for order in orders:
-        if str(order.get("id")) == str(order_id):
+        if str(order.get("id")) == order_id and order.get("status") == "pending":
             order["status"] = "rejected"
             save_orders(orders)
-
-            # Отправляем уведомление пользователю
             bot.send_message(
                 order["user_id"],
-                f"❌ <b>Ваша заявка #{order_id} была отклонена.</b>\n\n"
-                f"<b>Тариф:</b> {order['product']}\n\n"
-                "Если у вас есть вопросы, напишите администратору.\n"
-                f"Админ: @{ADMIN_USERNAME}",
-                parse_mode="HTML",
-                reply_markup=build_main_menu()
+                f"❌ Заявка #{order_id} отклонена.\nПо вопросам: @{ADMIN_USERNAME}",
             )
-            break
+            bot.answer_callback_query(call.id, "Заявка отменена")
+            bot.edit_message_text(
+                f"❌ Заявка #{order_id} отменена.",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=admin_keyboard(),
+            )
+            return
+    bot.answer_callback_query(call.id, "Заявка уже обработана", show_alert=True)
 
-    bot.answer_callback_query(call.id, "❌ Заявка отклонена и пользователю отправлено уведомление")
-    bot.edit_message_text(
-        f"❌ <b>Заявка #{order_id} отклонена</b>\n\n"
-        "Пользователю отправлено уведомление.",
-        call.message.chat.id,
-        call.message.message_id,
-        parse_mode="HTML"
-    )
+
+@bot.message_handler(func=lambda message: message.from_user.id in awaiting_key and message.text)
+def send_key(message):
+    if not is_admin(message.from_user):
+        return
+    order_id = awaiting_key.pop(message.from_user.id)
+    orders = load_orders()
+    for order in orders:
+        if str(order.get("id")) == str(order_id) and order.get("status") == "pending":
+            order["status"] = "approved"
+            order["key"] = message.text.strip()
+            save_orders(orders)
+            bot.send_message(
+                order["user_id"],
+                f"✅ Оплата заявки #{order_id} подтверждена!\n\n"
+                f"🔑 Ваш ключ:\n<code>{order['key']}</code>",
+                parse_mode="HTML",
+            )
+            bot.send_message(
+                message.chat.id,
+                f"✅ Ключ отправлен по заявке #{order_id}.",
+                reply_markup=admin_keyboard(),
+            )
+            return
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "noop")
-def callback_noop(call):
-    """Пустой обработчик"""
+def noop(call):
     bot.answer_callback_query(call.id)
 
 
-print("✅ Бот запущен и готов к работе!")
-print(f"📱 Админ: @{ADMIN_USERNAME}")
-print("💰 Тарифы: 1м (299₽), 3м (799₽), 12м (2499₽)")
-
 if __name__ == "__main__":
+    print("Бот запущен")
     bot.infinity_polling()
