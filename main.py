@@ -8,6 +8,7 @@ from telebot import types
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_USERNAME = (os.getenv("ADMIN_USERNAME", "SotkaSV")).lstrip("@")
+ADMIN_USER_ID = os.getenv("ADMIN_USER_ID")
 DATA_FILE = os.path.join(os.path.dirname(__file__), "orders.json")
 SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "settings.json")
 
@@ -39,6 +40,10 @@ def save_json(path: str, value):
         json.dump(value, file, ensure_ascii=False, indent=2)
 
 
+def get_user_label(user) -> str:
+    return (user.username or user.first_name or "Без имени")
+
+
 def load_orders() -> List[Dict]:
     data = load_json(DATA_FILE, [])
     return data if isinstance(data, list) else []
@@ -57,7 +62,9 @@ def next_order_id(orders: List[Dict]) -> int:
 
 
 def is_admin(user) -> bool:
-    return (user.username or "").lower() == ADMIN_USERNAME.lower()
+    username_ok = (user.username or "").lower() == ADMIN_USERNAME.lower()
+    id_ok = bool(ADMIN_USER_ID and str(user.id) == str(ADMIN_USER_ID))
+    return username_ok or id_ok
 
 
 def get_admin_chat_id() -> Optional[int]:
@@ -110,9 +117,10 @@ def pending_keyboard():
         keyboard.add(types.InlineKeyboardButton("✅ Открытых заявок нет", callback_data="noop"))
     else:
         for order in orders:
+            label = order.get("user_name") or order.get("username") or order.get("first_name") or "Без имени"
             keyboard.add(
                 types.InlineKeyboardButton(
-                    f"🟡 #{order['id']} · {order['product']} · {order['user_name']}",
+                    f"🟡 #{order['id']} · {order['product']} · {label}",
                     callback_data=f"admin:order:{order['id']}",
                 )
             )
@@ -135,9 +143,10 @@ def find_order(order_id: str):
 
 
 def order_text(order: Dict) -> str:
+    user_name = order.get("user_name") or order.get("username") or order.get("first_name") or "Без имени"
     return (
         f"<b>📩 Заявка #{order['id']}</b>\n\n"
-        f"Покупатель: @{order.get('username') or 'без username'}\n"
+        f"Покупатель: @{user_name if user_name and not user_name.startswith('@') else user_name}\n"
         f"Имя: {order.get('first_name', '—')}\n"
         f"Товар: {order['product']}\n"
         f"Цена: {order['price']}\n"
@@ -239,9 +248,11 @@ def payment_proof(message):
         return
     product = PRODUCTS[key]
     orders = load_orders()
+    user_name = message.from_user.username or message.from_user.first_name or "Без имени"
     order = {
         "id": next_order_id(orders),
         "user_id": message.from_user.id,
+        "user_name": user_name,
         "username": message.from_user.username,
         "first_name": message.from_user.first_name,
         "product": product["title"],
