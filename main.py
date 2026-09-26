@@ -7,8 +7,8 @@ import telebot
 from telebot import types
 
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_USERNAME = (os.getenv("ADMIN_USERNAME", "SotkaSV")).lstrip("@")
-ADMIN_USER_ID = os.getenv("ADMIN_USER_ID")
+ADMIN_USERNAME = "SotkaSV"
+ADMIN_USER_ID = os.getenv("ADMIN_USER_ID", "8759274321")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 DATA_FILE = os.path.join(os.path.dirname(__file__), "orders.json")
 SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "settings.json")
